@@ -1,0 +1,98 @@
+- hosts: localhost
+  gather_facts: no
+  vars_files:
+  - cred.yml
+  tasks:
+  - name: "Installing Boto3 library"
+    pip:
+      name: boto
+      state: present
+  - name: "Security Group for both Master and Worker Nodes"
+    ec2_group:
+      name: MultiNodeCluster
+      description: "This SG allows allows all traffic"
+      region: us-east-1
+      aws_access_key: "{{ access_key }}"
+      aws_secret_key: "{{ secret_key }}"
+      rules:
+      - proto: all
+        cidr_ip: 0.0.0.0/0
+      rules_egress:
+      - proto: all
+        cidr_ip: 0.0.0.0/0
+  - name: "Launching Master Node"
+    ec2:
+      key_name: aws
+      instance_type: t2.micro
+      image: ami-047a51fa27710816e
+      wait: true
+      group: MultiNodeCluster
+      count: 1
+      vpc_subnet_id: subnet-e533d4d4
+      assign_public_ip: yes
+      region: us-east-1
+      state: present
+      aws_access_key: "{{ access_key }}"
+      aws_secret_key: "{{ secret_key }}"
+      instance_tags:
+        Name: MasterNode
+    register: master_info
+  - name: "Launching Worker Nodes"
+    ec2:
+      key_name: aws
+      instance_type: t2.micro
+      image: ami-047a51fa27710816e
+      wait: true
+      group: MultiNodeCluster
+      count: 2
+      vpc_subnet_id: subnet-e533d4d4
+      assign_public_ip: yes
+      region: us-east-1
+      state: present
+      aws_access_key: "{{ access_key }}"
+      aws_secret_key: "{{ secret_key }}"
+      instance_tags:
+        Name: WorkerNode
+    register: worker_info
+  - name: "Add MasterNode to host group"
+    add_host:
+      hostname: "{{ item.public_ip }}"
+      groupname: master
+    loop: "{{ master_info['instances'] }}"
+  - name: "Add WorkerNodes to host group"
+    add_host:
+      hostname: "{{ item.public_ip }}"
+      groupname: workers
+    loop: "{{ worker_info['instances'] }}"
+  - name: "Waiting for SSH"
+    wait_for:
+      host: "{{ item.public_dns_name }}"
+      port: 22
+      state: started
+    loop: "{{ master_info['instances'] }}"
+  - name: "Waiting for SSH"
+    wait_for:
+      host: "{{ item.public_dns_name }}"
+      port: 22
+      state: started
+    loop: "{{ worker_info['instances'] }}"
+
+- hosts: master
+  roles:
+  - MasterNode
+  tasks:
+  - name: "Getting the join command"
+    shell: "kubeadm token  create --print-join-command"
+    register: joincommand
+  - debug:
+      var: joincommand["stdout"]
+  - add_host:
+      name: "linktojoin"
+      link: "{{ joincommand['stdout'] }}"
+
+- hosts: workers
+  roles:
+  - WorkerNode
+  tasks:
+  - name: "Joining the master"
+    shell: "{{ hostvars['linktojoin']['link'] }}"
